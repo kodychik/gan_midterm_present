@@ -1,0 +1,309 @@
+---
+title: 'Week 4: GAN and CGAN Implementation for Financial Data'
+publishedAt: '2024-04-08'
+summary: 'Detailed implementation of GANs and CGANs for financial time-series data, including data preprocessing, model architecture, and performance analysis.'
+---
+
+# Implementation and Analysis
+
+## Step 1: Data Preprocessing Pipeline
+
+### Downloading Stock Data & Computing Log Returns
+
+```python
+ticker = 'AAPL'
+data = yf.download(ticker, start='2010-01-01', end='2023-12-31')
+```
+
+- Using Yahoo Finance (`yfinance`) to download historical stock prices for Apple (`AAPL`)
+- Dataset includes Open, High, Low, Close, Volume, and Adjusted Close prices
+- Date range: 2010-2023 for meaningful pattern extraction
+
+```python
+price_column = 'Adj Close' if 'Adj Close' in data.columns else 'Close'
+data['Log_Returns'] = np.log(data[price_column] / data[price_column].shift(1))
+```
+
+- Using **Adjusted Close** to account for splits and dividends
+- Computing **logarithmic returns**: `r_t = log(P_t/P_{t-1})`
+- Advantages of log returns:
+    - Additive multi-period returns
+    - Account for compounding effects
+    - Stabilize variance
+
+```python
+rolling_log_returns = pd.Series(log_returns).rolling(window=10).sum().dropna().values.reshape(-1, 1)
+```
+
+- Calculating **10-day rolling log returns** for trend capture
+- Smoothing fluctuations to focus on trends rather than daily noise
+
+### Standardizing the Data
+
+```python
+scaler = StandardScaler()
+standardized_returns = scaler.fit_transform(rolling_log_returns)
+```
+
+- Centering data around 0 with unit variance
+- Ensures:
+    - Better model convergence
+    - Prevents feature dominance
+    - Stable training
+
+## Step 2: GAN Model Architecture
+
+### Generator - Creating Fake Stock Returns
+
+```python
+def build_generator(latent_dim):
+    model = models.Sequential()
+    model.add(layers.Dense(128, input_dim=latent_dim))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Activation('relu'))
+    model.add(layers.Dropout(0.3))
+    
+    model.add(layers.Dense(256))
+    model.add(layers.BatchNormalization())
+    model.add(layers.Activation('relu'))
+    model.add(layers.Dropout(0.3))
+    
+    model.add(layers.Dense(1, activation='tanh'))
+    return model
+```
+
+- Generator architecture:
+    - Input: Random noise vector
+    - Hidden layers with BatchNorm and ReLU
+    - Dropout for regularization
+    - Output: Synthetic time-series return
+
+### Discriminator - Distinguishing Real from Fake Data
+
+```python
+def build_discriminator():
+    model = models.Sequential()
+    model.add(layers.Dense(256, input_dim=1))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.Dropout(0.3))
+    
+    model.add(layers.Dense(128))
+    model.add(layers.LeakyReLU(alpha=0.2))
+    model.add(layers.Dropout(0.3))
+    
+    model.add(layers.Dense(1, activation='sigmoid'))
+    return model
+```
+
+- Discriminator features:
+    - LeakyReLU for better gradient flow
+    - Dropout for preventing overfitting
+    - Binary classification output
+
+## Step 3: Conditional GAN (CGAN)
+
+### CGAN Architecture
+
+```python
+def build_cgan_generator(latent_dim, condition_dim):
+    input_noise = layers.Input(shape=(latent_dim,))
+    input_condition = layers.Input(shape=(condition_dim,))
+    merged_input = layers.Concatenate()([input_noise, input_condition])
+    
+    x = layers.Dense(128)(merged_input)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('relu')(x)
+    x = layers.Dropout(0.3)(x)
+    
+    x = layers.Dense(1, activation='tanh')(x)
+    return Model([input_noise, input_condition], x)
+```
+
+- Adds market conditions to generator
+- Concatenates noise and condition inputs
+- Generates returns based on market state
+
+## Step 4: Training Analysis
+
+### GAN Training Log:
+```
+GAN Epoch 0    | D Loss: 0.6788, D Acc: 60.94%, G Loss: 0.6812
+GAN Epoch 500  | D Loss: 0.7003, D Acc: 45.76%, G Loss: 0.6581
+GAN Epoch 1000 | D Loss: 0.7021, D Acc: 45.41%, G Loss: 0.6563
+GAN Epoch 2000 | D Loss: 0.7029, D Acc: 45.33%, G Loss: 0.6557
+GAN Epoch 3000 | D Loss: 0.7033, D Acc: 45.26%, G Loss: 0.6555
+GAN Epoch 4000 | D Loss: 0.7034, D Acc: 45.19%, G Loss: 0.6552
+```
+
+Key observations:
+- Discriminator accuracy drops from 60.94% to ~45%
+- Generator loss stabilizes around 0.65
+- Potential mode collapse indicated by stable loss
+
+### CGAN Training Log:
+```
+CGAN Epoch 0    | D Loss: 0.7051, D Acc: 42.97%, G Loss: 0.7244
+CGAN Epoch 1000 | D Loss: 0.7058, D Acc: 43.92%, G Loss: 0.7089
+CGAN Epoch 2000 | D Loss: 0.7063, D Acc: 43.45%, G Loss: 0.7073
+CGAN Epoch 3000 | D Loss: 0.7069, D Acc: 42.99%, G Loss: 0.7061
+CGAN Epoch 4000 | D Loss: 0.7073, D Acc: 42.59%, G Loss: 0.7049
+```
+
+Key observations:
+- Lower discriminator accuracy (42-44%)
+- Higher overall losses due to conditional input
+- More stable training progression
+
+## Step 5: Performance Evaluation
+
+### KS Test Results
+```
+GAN vs Real: KS Statistic = 0.8442, p-value = 0.0000
+CGAN vs Real: KS Statistic = 0.4855, p-value = 0.0000
+MC Baseline vs Real: KS Statistic = 0.0588, p-value = 0.0087
+```
+
+Analysis:
+- CGAN performs better than GAN
+- Monte Carlo shows best statistical fit
+- All models show significant differences from real data
+
+### Autocorrelation and Frobenius Norm
+```
+GAN vs Real: 1.7540
+CGAN vs Real: 1.6726
+MC Baseline vs Real: 1.6559
+```
+
+- Lower Frobenius norm indicates better similarity
+- CGAN outperforms standard GAN
+- MC baseline shows best temporal correlation
+
+### Detailed Training Analysis
+
+#### 1. GAN Training Losses
+
+- **Discriminator Loss (Blue Line):**
+    - Initially high but rapidly drops, showing quick learning
+    - **Flatline after 1000 epochs** indicating equilibrium
+    - Stabilizes as discriminator becomes equally confused by real and fake samples
+
+- **Generator Loss (Orange Line):**
+    - Drops consistently, showing improvement
+    - **Sharp decline** in early epochs indicates rapid learning
+    - **Plateau at lower values** suggests potential mode collapse
+
+#### 2. CGAN Training Losses
+
+- **Discriminator Loss (Blue Line):**
+    - **Similar pattern to GAN** with rapid decrease
+    - **Struggles more** due to conditional input complexity
+    - Stabilizes at higher value compared to GAN
+
+- **Generator Loss (Orange Line):**
+    - Higher initial loss compared to GAN
+    - More fluctuations due to conditional inputs
+    - Slower but eventual stabilization
+
+### ACF Comparison Analysis
+
+Autocorrelation Function (ACF) comparison evaluates how well generated data preserves dependency patterns of real financial data.
+
+#### Why ACF Comparison Matters
+
+1. **Temporal Dependencies:**
+    - Financial time series show temporal correlations
+    - ACF measures influence of past values on future ones
+    - Ensures realistic pattern preservation
+
+2. **Validation Method:**
+    - Compares real vs synthetic data characteristics
+    - Assesses temporal structure preservation
+    - Identifies model deficiencies
+
+3. **Model Benchmarking:**
+    - Compares CGAN vs Monte Carlo performance
+    - Evaluates correlation structure preservation
+    - Measures improvement over traditional methods
+
+#### Key Findings
+
+- **Real Data:** Shows strong temporal dependencies
+- **GAN & CGAN:** Struggle to capture full correlation structure
+- **Monte Carlo:** Better but lacks complex market dynamics
+
+### Distribution Analysis
+
+#### QQ Plot Findings
+- **GAN:** Deviates in extreme quantiles
+- **CGAN:** Better alignment with some divergence
+- **MC Baseline:** Best statistical fit but misses market dynamics
+
+#### Histogram Analysis
+1. **Real Data (Blue):**
+    - Benchmark distribution
+    - Shows market characteristics
+
+2. **GAN Data (Orange):**
+    - Narrower distribution
+    - Limited diversity in returns
+
+3. **CGAN Data (Green):**
+    - Broader coverage
+    - Underestimates extremes
+
+4. **Monte Carlo (Red):**
+    - Normal distribution
+    - Matches bulk but misses tails
+
+## Conclusions
+
+### Model Comparison
+- **GAN**:
+    - Simple implementation
+    - Struggles with temporal dependencies
+    - Limited control over generation
+
+- **CGAN**:
+    - Better distribution matching
+    - Controlled generation
+    - More complex training dynamics
+
+- **Monte Carlo**:
+    - Best statistical fit
+    - Lacks realistic market dynamics
+    - Industry standard baseline
+
+### Technical Insights
+
+1. **Training Dynamics:**
+    - GAN shows faster convergence
+    - CGAN requires more training time
+    - Both exhibit typical GAN challenges
+
+2. **Distribution Matching:**
+    - CGAN better captures market conditions
+    - Traditional MC shows good statistical fit
+    - Room for improvement in tail events
+
+3. **Temporal Structure:**
+    - All models struggle with time dependencies
+    - Need for advanced architectures
+    - Potential for hybrid approaches
+
+### Implementation Recommendations
+
+1. **Data Preprocessing:**
+    - Use rolling windows for trend capture
+    - Proper standardization crucial
+    - Consider market-specific features
+
+2. **Model Architecture:**
+    - Balance complexity vs stability
+    - Add temporal awareness
+    - Incorporate market knowledge
+
+3. **Training Process:**
+    - Monitor convergence carefully
+    - Adjust hyperparameters based on metrics
+    - Consider adaptive training schemes

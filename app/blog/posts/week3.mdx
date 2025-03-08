@@ -1,0 +1,453 @@
+---
+title: 'Week 3: Deep Dive in GANs and Time Series Applications'
+publishedAt: '2024-04-01'
+summary: 'Comprehensive study of GAN architecture, training dynamics, loss functions, and their applications in time-series data generation.'
+---
+
+# Generative Adversarial Networks (GANs)
+
+## What are GANs?
+
+- GANs are a type of neural network architecture consisting of two networks:
+    1. **Generator**: Creates synthetic data that mimics real data.
+    2. **Discriminator**: Distinguishes between real and synthetic data.
+- The generator and discriminator are trained adversarially, improving each other's performance iteratively.
+
+## Architecture
+
+- **Generator**:
+    - Takes a random noise vector (z) as input.
+    - Outputs synthetic data (e.g., images, text, time series).
+- **Discriminator**:
+    - Takes real or synthetic data as input.
+    - Outputs a probability indicating whether the data is real or fake.
+
+- **Adversarial Training**:
+    - **Generator Loss**: Tries to fool the discriminator.
+    - **Discriminator Loss**: Tries to distinguish real data from generated data.
+
+### Loss Function for GANs
+
+In a standard GAN:
+- The **Discriminator (D)** and **Generator (G)** are trained with opposing goals.
+
+The objective function is:
+
+```
+min[G] max[D] V(D,G) = E[log D(x)] + E[log(1 - D(G(z)))]
+```
+
+1. **Discriminator's Objective**:
+   - Maximize the probability of correctly classifying real data (*x*) as real and generated data (G(z)) as fake:
+   ```
+   max[D] E[log D(x)] + E[log(1 - D(G(z)))]
+   ```
+
+2. **Generator's Objective**:
+   - Minimize the probability that the discriminator correctly classifies generated data as fake:
+   ```
+   min[G] E[log(1 - D(G(z)))]
+   ```
+
+## Sample Python Implementation
+
+```python
+#!/usr/bin/env python
+
+from keras.datasets import mnist
+from keras.layers import Input, Dense, Reshape, Flatten
+from keras.layers import BatchNormalization
+from keras.layers.advanced_activations import LeakyReLU
+from keras.models import Sequential, Model
+from keras.optimizers import Adam
+import matplotlib.pyplot as plt
+import numpy as np
+
+#Define input image dimensions
+img_rows = 28
+img_cols = 28
+channels = 1
+img_shape = (img_rows, img_cols, channels)
+
+##########################################################################
+#Given input of noise (latent) vector, the Generator produces an image.
+def build_generator():
+    noise_shape = (100,) #1D array of size 100 (latent vector / noise)
+
+    model = Sequential()
+
+    model.add(Dense(256, input_shape=noise_shape))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(BatchNormalization(momentum=0.8))
+    model.add(Dense(512))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(BatchNormalization(momentum=0.8))
+    model.add(Dense(1024))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(BatchNormalization(momentum=0.8))
+    
+    model.add(Dense(np.prod(img_shape), activation='tanh'))
+    model.add(Reshape(img_shape))
+
+    model.summary()
+
+    noise = Input(shape=noise_shape)
+    img = model(noise)    #Generated image
+
+    return Model(noise, img)
+
+def build_discriminator():
+    model = Sequential()
+
+    model.add(Flatten(input_shape=img_shape))
+    model.add(Dense(512))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dense(256))
+    model.add(LeakyReLU(alpha=0.2))
+    model.add(Dense(1, activation='sigmoid'))
+    model.summary()
+
+    img = Input(shape=img_shape)
+    validity = model(img)
+
+    return Model(img, validity)
+
+def train(epochs, batch_size=128, save_interval=50):
+    # Load the dataset
+    (X_train, _), (_, _) = mnist.load_data()
+
+    # Convert to float and Rescale -1 to 1
+    X_train = (X_train.astype(np.float32) - 127.5) / 127.5
+    X_train = np.expand_dims(X_train, axis=3)
+
+    half_batch = int(batch_size / 2)
+
+    for epoch in range(epochs):
+        # Train Discriminator
+        idx = np.random.randint(0, X_train.shape[0], half_batch)
+        imgs = X_train[idx]
+        noise = np.random.normal(0, 1, (half_batch, 100))
+        gen_imgs = generator.predict(noise)
+
+        d_loss_real = discriminator.train_on_batch(imgs, np.ones((half_batch, 1)))
+        d_loss_fake = discriminator.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        # Train Generator
+        noise = np.random.normal(0, 1, (batch_size, 100))
+        valid_y = np.array([1] * batch_size)
+        g_loss = combined.train_on_batch(noise, valid_y)
+
+        print("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % 
+              (epoch, d_loss[0], 100*d_loss[1], g_loss))
+
+        if epoch % save_interval == 0:
+            save_imgs(epoch)
+
+def save_imgs(epoch):
+    r, c = 5, 5
+    noise = np.random.normal(0, 1, (r * c, 100))
+    gen_imgs = generator.predict(noise)
+
+    # Rescale images 0 - 1
+    gen_imgs = 0.5 * gen_imgs + 0.5
+
+    fig, axs = plt.subplots(r, c)
+    cnt = 0
+    for i in range(r):
+        for j in range(c):
+            axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
+            axs[i,j].axis('off')
+            cnt += 1
+    plt.savefig("images/%d.png" % epoch)
+    plt.close()
+```
+
+## 5 Steps of Training GANs
+
+1. **Define GAN** architecture based on the application.
+2. **Train the discriminator** to distinguish between real and fake data.
+3. **Train the generator** to produce data that fools the discriminator.
+4. Continue training both networks for **multiple epochs**.
+5. **Save the generator model** for generating new, realistic synthetic data.
+
+> 💡 **Important Training Notes:**
+> When training Discriminator:
+> - Hold Generator values constant
+> 
+> When training Generator:
+> - Hold Discriminator values constant
+> 
+> Each should train against static adversary
+
+## Training Implementation
+
+```python
+def train(epochs, batch_size=128, save_interval=50):
+    # Load the dataset
+    (X_train, _), (_, _) = mnist.load_data()
+
+    # Convert to float and Rescale -1 to 1
+    X_train = (X_train.astype(np.float32) - 127.5) / 127.5
+    X_train = np.expand_dims(X_train, axis=3)
+
+    half_batch = int(batch_size / 2)
+
+    for epoch in range(epochs):
+        # Train Discriminator
+        idx = np.random.randint(0, X_train.shape[0], half_batch)
+        imgs = X_train[idx]
+        noise = np.random.normal(0, 1, (half_batch, 100))
+        gen_imgs = generator.predict(noise)
+
+        d_loss_real = discriminator.train_on_batch(imgs, np.ones((half_batch, 1)))
+        d_loss_fake = discriminator.train_on_batch(gen_imgs, np.zeros((half_batch, 1)))
+        d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
+
+        # Train Generator
+        noise = np.random.normal(0, 1, (batch_size, 100))
+        valid_y = np.array([1] * batch_size)
+        g_loss = combined.train_on_batch(noise, valid_y)
+
+        print("%d [D loss: %f, acc.: %.2f%%] [G loss: %f]" % 
+              (epoch, d_loss[0], 100*d_loss[1], g_loss))
+
+        if epoch % save_interval == 0:
+            save_imgs(epoch)
+```
+
+## Applications
+
+- **Image Generation**: Create realistic images from noise.
+- **Data Augmentation**: Generate synthetic data for underrepresented classes.
+- **Super-Resolution**: Improve image resolution.
+- **Video Generation**: Create videos from text or keyframes.
+- **Art and Creativity**: Generate music, art, or other creative outputs.
+
+# CGAN (Conditional GAN)
+
+## What is CGAN?
+
+- **Conditional GANs (CGANs)** are an extension of GANs where both the generator and discriminator are conditioned on additional information (y).
+- Condition y could be:
+    - **Class Labels**: E.g., generate images of cats or dogs.
+    - **Attributes**: E.g., age, gender, or object properties.
+    - **Other Modalities**: E.g., text descriptions or paired images
+
+## Architecture
+
+- **Generator**:
+    - Input: Random noise (z) and condition (y).
+    - Output: Synthetic data that aligns with the given condition.
+- **Discriminator**:
+    - Input: Real/generated data and the same condition (y).
+    - Output: Probability indicating whether the data is real or fake under the given condition.
+
+### Loss Function for CGANs
+
+```
+min[G] max[D] E[log D(x,y)] + E[log(1 - D(G(z,y), y))]
+```
+
+- **Discriminator Objective**:
+    ```
+    max[D] E[log D(x,y)] + E[log(1 - D(G(z,y), y))]
+    ```
+
+- **Generator Objective**:
+    ```
+    min[G] E[log(1 - D(G(z,y), y))]
+    ```
+
+## Why CGANs?
+
+- GANs generate data randomly and lack control over specific attributes.
+- CGANs enable controlled and guided data generation, improving interpretability and utility.
+- They are essential for applications requiring **specific outputs** based on input conditions.
+
+## Training Process
+
+1. Define CGAN architecture: Add condition (y) to both networks.
+2. Train the discriminator:
+   - Evaluate real/generated data with their conditions.
+3. Train the generator:
+   - Create fake data matching the condition to fool the discriminator.
+4. Iterate training with adversarial loss.
+5. Use the generator with specific conditions to produce controlled outputs.
+
+# Comparison: GAN vs. CGAN
+
+### Why CGANs Make a Difference
+
+| **Aspect** | **GAN** | **CGAN** |
+| --- | --- | --- |
+| **Control** | Random output without control | Controlled generation based on y |
+| **Use Case** | General data generation | Targeted data synthesis |
+| **Example Output** | Any human face | A smiling woman with glasses |
+| **Applications** | Creative art, general image synthesis | Conditional data augmentation, domain adaptation |
+
+| **Aspect** | **GAN** | **CGAN** |
+| --- | --- | --- |
+| **Input to Generator** | Random noise vector (z) | Random noise vector (z) + Condition (y) |
+| **Input to Discriminator** | Real/generated data | Real/generated data + Condition (y) |
+| **Output Control** | Uncontrolled/random data generation | Controlled generation based on conditions |
+| **Loss Function** | Based on adversarial loss | Condition included in loss calculation |
+| **Use Cases** | General data synthesis | Applications requiring controlled output |
+
+### High-Level Summary
+
+- **GANs**:
+    - Powerful for general-purpose generation but lack control over specific outputs
+    - Framework for generating synthetic data with **no specific control over the outputs**
+    - Best suited for tasks requiring general data generation
+- **CGANs**:
+    - Introduce conditional control for **targeted applications**
+    - Enhanced GAN variant that conditions the data generation process
+    - Ideal for tasks needing precise control over generated data
+
+# Timeseries and CGAN
+
+### Why Use CGANs for Time-Series?
+
+1. **Controlled Generation**:
+    - Enables generation of time-series data aligned with **specific conditions**
+    - Example: Generating stock prices **conditioned on market volatility**
+
+2. **Data Augmentation**:
+    - **Augments time-series datasets** for scarce or imbalanced data
+    - Example: Generating synthetic ECG signals for rare conditions
+
+3. **Scenario Simulation**:
+    - Creates **hypothetical time-series scenarios** for testing
+    - Example: Simulating power grid load under extreme conditions
+
+4. **Filling Data Gaps**:
+    - **Reconstructs missing segments** in incomplete datasets
+    - Example: Filling missing values in IoT sensor data
+
+5. **Improved Predictive Models**:
+    - Enhances performance of models trained on time-series data
+    - Example: Improving demand forecasting models
+
+### Key Use Cases of CGANs for Time-Series
+
+1. **Financial Applications**:
+    - Stock price simulation
+    - Cryptocurrency trend forecasting
+    - Portfolio risk analysis
+    - Market indicators (volatility, volume)
+    - Stress testing and risk management
+
+2. **Healthcare and Medical Data**:
+    - ECG signal generation
+    - EEG signal augmentation
+    - Patient demographics conditioning
+    - Disease-specific markers
+    - Anomaly detection training
+
+3. **Energy Demand Forecasting**:
+    - Electricity usage patterns
+    - Renewable energy generation
+    - Weather data conditioning
+    - Smart grid optimization
+    - Peak demand forecasting
+
+4. **Traffic Flow Modeling**:
+    - Vehicle counts on highways
+    - Pedestrian traffic patterns
+    - Time-of-day conditioning
+    - Urban planning optimization
+    - Autonomous vehicle training
+
+5. **IoT and Sensor Data**:
+    - Industrial machinery readings
+    - Smart home data
+    - Device state conditioning
+    - Predictive maintenance
+    - System testing simulation
+
+### How CGANs Work for Time-Series
+
+1. **Input to Generator**:
+    - Random noise (z) + Time-dependent features (y)
+    - Examples: timestamps, weather conditions
+
+2. **Input to Discriminator**:
+    - Real/generated time-series data
+    - Matching condition (y)
+
+3. **Output**:
+    - Generator creates synthetic time-series data
+    - Discriminator evaluates realism and consistency
+
+### Advantages of Using CGANs for Time-Series
+
+1. **Interpretability**:
+    - Clear control over generated data
+    - Conditions provide meaningful context
+
+2. **Flexibility**:
+    - Adaptable to diverse domains
+    - Handles various time-series types
+
+3. **Scalability**:
+    - Extendable with RNNs/LSTMs
+    - Captures complex dependencies
+
+### Challenges and Solutions
+
+1. **Temporal Dependencies**:
+    - Challenge: Modeling long-term patterns
+    - Solution: RNN-based generators
+
+2. **Evaluation Metrics**:
+    - Challenge: Measuring generation quality
+    - Solution: Domain-specific metrics
+
+3. **Data Preprocessing**:
+    - Challenge: Handling varied time-series
+    - Solution: Normalization techniques
+
+# Deep Learning Architecture Overview
+
+### CNN (Convolutional Neural Networks)
+- Primary use: Image-related tasks
+- Key features: Spatial hierarchy extraction
+- Applications: Classification, detection
+
+### RNN (Recurrent Neural Networks)
+- Primary use: Sequential data
+- Key features: Temporal dependency handling
+- Applications: Financial forecasting
+
+### Time Series Models
+- Types: LSTMs, Transformers
+- Strengths: Long-term dependencies
+- Applications: Risk modeling
+
+### GANs in Risk Modeling
+- Purpose: Synthetic data generation
+- Applications: Scenario simulation
+- Benefits: Portfolio diversification
+
+# Loss Functions
+
+### Minimax Loss
+- Original GAN paper implementation
+- Two-player game framework
+- Discriminator maximization
+- Generator minimization
+
+### Wasserstein Loss
+- Improved stability
+- Better gradient flow
+- Default in TF-GAN
+- Addresses vanishing gradients
+
+### Training Dynamics
+- Alternating optimization
+- Balanced training crucial
+- Convergence monitoring
+- Performance metrics tracking
+
+[End of content] 
