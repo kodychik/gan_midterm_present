@@ -1,0 +1,224 @@
+---
+title: "Week 5: Extended GAN Variants for Financial Data"
+publishedAt: "2024-03-14"
+summary: "Technical progress report on quantum, probabilistic, and economics-driven (FinGAN) modifications to the base CGAN model for financial time-series."
+---
+
+## 1) Data Structure & Preprocessing
+
+We compute **10-day log returns** using `r_t = ln(P_t / P_{t-10})`, then scale them to the range `[-1,1]`. This produces an array `X_train` of shape **(1237, 10, 2)**, representing 10 time steps for 2 assets. For evaluation, we isolate the **last time step** from each sequence, creating shape **(1237, 2)**.
+
+```python
+# Example: 10-day log returns & scaling
+returns = np.log(data / data.shift(10)).dropna()
+scaler = MinMaxScaler(feature_range=(-1, 1))
+scaled_returns = scaler.fit_transform(returns)
+
+# Building sequences (1237, 10, 2)
+seq_len = 10
+X_train = []
+for i in range(len(scaled_returns) - seq_len):
+    X_train.append(scaled_returns[i:i+seq_len])
+X_train = np.array(X_train, dtype=np.float32)
+print("X_train shape:", X_train.shape)  # e.g. (1237, 10, 2)
+
+# Isolate final time step -> (1237, 2)
+real_returns = scaler.inverse_transform(X_train[:, -1, :])
+print("Real Returns shape:", real_returns.shape)
+
+```
+
+## 2) Evaluators
+
+**Frobenius Norm**  
+We measure similarity of correlation structures by taking the correlation matrices of real vs. synthetic data and computing the Frobenius norm of their difference.
+
+**Kolmogorov-Smirnov (KS) Test**  
+We compare the distributions of each dimension in real vs. synthetic data by computing the KS statistic for each dimension and then averaging these values.
+
+**Bivariate Tail Dependence**  
+For pairs of assets, we measure the probability both exceed a certain quantile threshold simultaneously (e.g., 0.95). We compare these mean values for real vs. synthetic data to assess tail dependence differences.
+
+```python
+import numpy as np
+from scipy.stats import ks_2samp
+
+# 1. Frobenius Norm
+real_corr = np.corrcoef(real_data.T)
+synth_corr = np.corrcoef(synthetic_data.T)
+frobenius_norm = np.linalg.norm(real_corr - synth_corr, 'fro')
+
+# 2. Kolmogorov-Smirnov (KS) Test
+ks_stats = []
+for i in range(real_data.shape[1]):
+    ks_stat, _ = ks_2samp(real_data[:, i], synthetic_data[:, i])
+    ks_stats.append(ks_stat)
+mean_ks = np.mean(ks_stats)
+
+# 3. Bivariate Tail Dependence
+def compute_bivariate_tail_dependence(data, q):
+    n_assets = data.shape[1]
+    tail_dependences = []
+    for j in range(n_assets):
+        for k in range(j+1, n_assets):
+            threshold_j = np.quantile(data[:, j], q)
+            threshold_k = np.quantile(data[:, k], q)
+            tail_dep = np.mean((data[:, j] > threshold_j) & (data[:, k] > threshold_k))
+            tail_dependences.append(tail_dep)
+    return np.mean(tail_dependences) if tail_dependences else None
+
+q = 0.95  # Example threshold
+real_tail_dep = compute_bivariate_tail_dependence(real_data, q)
+synth_tail_dep = compute_bivariate_tail_dependence(synthetic_data, q)
+tail_dep_diff = np.abs(real_tail_dep - synth_tail_dep)
+```
+
+## 3) Modifications to Original cGAN (Base Model)
+
+We refined the base CGAN with specialized generator variants (quantum-inspired, probabilistic) and an economics-driven loss. This enhances realism and risk-return alignment.
+
+```python
+import tensorflow as tf
+from tensorflow.keras import layers, Model
+
+# CGAN parameters
+latent_dim = 100
+condition_dim = X_train.shape[2]  # Number of columns
+n_features = X_train.shape[2]
+batch_size = 256
+epochs = 20000
+
+# Build Generator
+def build_generator():
+    noise = layers.Input(shape=(latent_dim,))
+    condition = layers.Input(shape=(condition_dim,))
+    x = layers.Concatenate()([noise, condition])
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    output = layers.Dense(n_features)(x)
+    return Model([noise, condition], output)
+
+# Build Discriminator
+def build_discriminator():
+    inputs = layers.Input(shape=(n_features,))
+    cond = layers.Input(shape=(condition_dim,))
+    x = layers.Concatenate()([inputs, cond])
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    validity = layers.Dense(1, activation='sigmoid')(x)
+    #validity = layers.Dense(1)(x) # remove sigmoid activition to completely match paper
+    return Model([inputs, cond], validity)
+
+# Quantum-Inspired Generator
+def build_quantum_generator():
+    noise = layers.Input(shape=(latent_dim,))
+    condition = layers.Input(shape=(condition_dim,))
+    x = layers.Concatenate()([noise, condition])
+    x = layers.Dense(128, activation=tf.math.cos)(x)  # simple quantum proxy
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    output = layers.Dense(n_features)(x)
+    return Model([noise, condition], output)
+
+# Probabilistic Generator
+def build_prob_generator():
+    noise = layers.Input(shape=(latent_dim,))
+    condition = layers.Input(shape=(condition_dim,))
+    x = layers.Concatenate()([noise, condition])
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    x = layers.Dense(128, activation='leaky_relu')(x)
+    # Output two values per asset: mean and log-variance
+    output_params = layers.Dense(n_features * 2)(x)
+    return Model([noise, condition], output_params)
+
+# Fin-GAN (Economics-Driven Loss)
+# --- Train Generator ---
+with tf.GradientTape() as g_tape:
+    noise = tf.random.normal([current_batch_size, latent_dim], dtype=tf.float16)
+    fake_samples = generator([noise, conditions])
+    fake_output = discriminator([fake_samples, conditions])
+    g_loss = -tf.reduce_mean(fake_output)
+
+    # Economics-driven loss component (e.g., Sharpe ratio)
+    mean_return = tf.reduce_mean(fake_samples)
+    std_return = tf.math.reduce_std(fake_samples) + tf.cast(1e-6, tf.float16)
+    sharpe_ratio = mean_return / std_return
+    lambda_econ = tf.cast(0.1, tf.float16)
+    econ_loss = -lambda_econ * sharpe_ratio  # encourage higher risk-adjusted returns
+
+    total_g_loss = g_loss + econ_loss
+
+g_gradients = g_tape.gradient(total_g_loss, generator.trainable_variables)
+generator_optimizer.apply_gradients(zip(g_gradients, generator.trainable_variables))
+```
+
+## 4) Results
+
+**Training Observations**
+
+- **Base** shows moderate Frobenius norms and KS values, suggesting balanced correlation preservation and distribution similarity.
+- **Quantum** sometimes yields smaller or larger correlation differences (e.g., Frobenius norms of 0.2481 vs. 0.6726). Its cosine-based layer can cause higher variance, reflected in higher KS stats at some epochs.
+- **Prob** (two-parameter outputs) better matches the tails at 20,000 epochs (absolute tail diff ~0.0202). It captures distribution nuances but can fluctuate in early training.
+- **Fin-GAN** diverges (NaN losses) due to numerical instability of the Sharpe-driven term, indicating that a more careful hyperparameter schedule is required.
+
+**Numerical Highlights (5000 vs. 20000 Epochs)**
+
+- **Base**: Frobenius norm improves from 0.4711 to 0.4076; KS drops from 0.0986 to 0.0542.
+- **Quantum**: Frobenius norm rises from 0.2481 to 0.6726; KS increases from 0.5966 to 0.6576.
+- **Prob**: Frobenius norm shifts from 0.5865 to 0.5235; KS drops from 0.3638 to 0.3452.
+- **Fin-GAN**: Fails to converge (NaNs) at both epochs.
+
+Below is an example code snippet to visualize Frobenius norms, KS statistics, and tail differences across variants and epochs using **matplotlib** (no subplots, one chart per metric).
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Metrics for 5000 epochs
+variants = ["base", "quantum", "prob", "fin_gan"]
+fro_5000 = [0.4711, 0.2481, 0.5865, np.nan]
+ks_5000 = [0.0986, 0.5966, 0.3638, np.nan]
+tail_5000 = [0.0315, 0.0105, 0.0315, 0.0719]
+
+# Metrics for 20000 epochs
+fro_20000 = [0.4076, 0.6726, 0.5235, np.nan]
+ks_20000 = [0.0542, 0.6576, 0.3452, np.nan]
+tail_20000 = [0.0291, 0.0315, 0.0202, 0.0719]
+
+# 1) Frobenius Norm Comparison
+plt.figure()
+x = np.arange(len(variants))
+width = 0.3
+plt.bar(x - width/2, fro_5000, width, label='5000 Epochs')
+plt.bar(x + width/2, fro_20000, width, label='20000 Epochs')
+plt.xticks(x, variants)
+plt.ylabel("Frobenius Norm")
+plt.legend()
+plt.title("Frobenius Norm by Variant")
+
+# 2) KS Statistic Comparison
+plt.figure()
+plt.bar(x - width/2, ks_5000, width, label='5000 Epochs')
+plt.bar(x + width/2, ks_20000, width, label='20000 Epochs')
+plt.xticks(x, variants)
+plt.ylabel("Mean KS Statistic")
+plt.legend()
+plt.title("KS Statistic by Variant")
+
+# 3) Absolute Tail Difference Comparison
+plt.figure()
+plt.bar(x - width/2, tail_5000, width, label='5000 Epochs')
+plt.bar(x + width/2, tail_20000, width, label='20000 Epochs')
+plt.xticks(x, variants)
+plt.ylabel("Absolute Tail Difference")
+plt.legend()
+plt.title("Tail Difference by Variant")
+
+plt.show()
+```
+
+Conclusions
+
+Longer training (20,000 epochs) generally improves distribution similarity (lower KS) for Base and Prob.
+Quantum’s higher KS suggests its nonlinearities can produce more varied data, sometimes overshooting correlation alignment.
+The Fin-GAN model requires careful stabilization of the Sharpe-based term to avoid NaNs.
+Overall, each variant offers trade-offs in distribution accuracy, correlation structure fidelity, and tail behavior.
